@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless Order Processing System
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.9
+    MemorySize: 128
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Resources:
+  # 1. SQS Queue (Orders-Queue)
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "Orders-Queue-${Environment}"
+      VisibilityTimeout: 30
+      MessageRetentionPeriod: 1209600  # 14 días
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersQueueDLQ.Arn
+        maxReceiveCount: 3
+
+  # 2. SQS DLQ (Dead Letter Queue)
+  OrdersQueueDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "Orders-Queue-DLQ-${Environment}"
+      MessageRetentionPeriod: 1209600
+
+  # 3. DynamoDB Table
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "OrdersTable-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: OrderID
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: OrderID
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: status-index
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  # 4. SNS Topic
+  OrdersTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "Ordes-Topic-${Environment}"
+      Subscription:
+        - Protocol: email
+          Endpoint: example@gmail.com
+
+  # 5. Lambda Function 1 - Process Orders from SQS
+  ProcessOrdersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "Orders-lambda1-ProcessOrders-${Environment}"
+      CodeUri: src/lambda-1-process-orders/
+      Handler: lambda_function.lambda_handler
+      MemorySize: 512
+      Timeout: 30
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt OrdersQueue.QueueName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt OrdersQueueDLQ.QueueName
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrdersQueue.Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 20
+
+  # 6. Lambda Function 2 - Publish to SNS from DynamoDB Stream
+  SNSPublisherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "Sender-Lambda2-${Environment}"
+      CodeUri: src/lambda-2-sns-publisher/
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Timeout: 60
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref OrdersTopic
+        - DynamoDBStreamReadPolicy:
+            TableName: !Ref OrdersTable
+      Events:
+        DynamoDBEvent:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt OrdersTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 5
+
+  # 7. API Gateway
+  OrdersApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "Orders-API-${Environment}"
+      StageName: !Ref Environment
+      DefinitionBody:
+        openapi: 3.0.1
+        info:
+          title: Orders API
+        paths:
+          /orders:
+            post:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:sqs:path/${AWS::AccountId}/${OrdersQueue}"
+                credentials: !GetAtt ApiGatewayRole.Arn
+                requestParameters:
+                  integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
+                requestTemplates:
+                  application/json: |
+                    Action=SendMessage&MessageBody=$input.json('$')
+                passthroughBehavior: never
+                integrationResponses:
+                  - statusCode: 200
+                    responseTemplates:
+                      application/json: |
+                        {"status": "success", "message": "Order queued successfully"}
+                responses:
+                  "200":
+                    description: Success
+
+  # 8. IAM Role for API Gateway
+  ApiGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SQSSendMessagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt OrdersQueue.Arn
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${OrdersApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/orders"
+  SQSQueueUrl:
+    Description: "SQS Queue URL"
+    Value: !Ref OrdersQueue
+  SNSTopicArn:
+    Description: "SNS Topic ARN"
+    Value: !Ref OrdersTopic
+  DynamoDBTableName:
+    Description: "DynamoDB Table Name"
+    Value: !Ref OrdersTable
