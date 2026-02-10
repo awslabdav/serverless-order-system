@@ -15,7 +15,7 @@ Procesa **100,000+ pedidos/mes** con un **costo promedio de $3.32 USD/mes**.
 
 ## 🏗️ Arquitectura
 
-![Arquitectura del Sistema](diagrams/architecture.png)
+![Arquitectura del Sistema](serverless/diagrams/architecture.png)
 
 API Gateway → Recibe solicitudes HTTP POST
 
