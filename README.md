@@ -25,6 +25,15 @@ Lambda (Processor) → Procesa pedidos y escribe en DynamoDB
 
 DynamoDB Stream → Captura cambios en tiempo real
 
+## ¿Que ventajas que presenta la solución?
+
+# Desacoplamiento
+El enfoque tradicional es gestionar todos los procesos de manera secuencial en una base de código monolítica, pero esto genera ciertas dificultades, como el cuello de botella, la latencia y la tendencia al colapso de todo el sistema ante la alta demanda. Por lo que actualmente se utiliza los microservicios que permite desacoplar partes de los subprocesos para obtener mayor resiliencia, a;gunas ventajas de este modelo:
+
+API responde rápido (solo pone en cola y continua con el proceso en segundo plano)
+Procesamiento asíncrono (no bloquea al cliente)
+Escalabilidad automática (SQS + Lambda)
+
 Lambda (Publisher) → Publica eventos en SNS
 
 SNS Topic → Distribuye notificaciones a múltiples servicios
